@@ -1,7 +1,6 @@
 @echo off
-:: Verifica se já está em modo administrador
+:: Auto-elevação
 >nul 2>&1 fltmc || (
-    :: Se não for admin, relança silenciosamente com elevação
     PowerShell.exe -Command "Start-Process cmd.exe -ArgumentList '/c \"\"%~f0\"\"' -Verb RunAs -WindowStyle Hidden"
     exit /b
 )
@@ -10,40 +9,42 @@
 :: A PARTIR DAQUI O CÓDIGO EXECUTA COMO ADMIN!
 :: =============================================
 
-:: Backup dos serviços atuais
+:: Define diretório do script como local de trabalho
+cd /d "%~dp0"
+
+:: Backup dos serviços
 if not exist "backup_servicos.txt" (
-    echo [BACKUP] Criando ponto de restauração...
+    echo [BACKUP] Criando backup em "%~dp0backup_servicos.txt"...
     PowerShell.exe -Command ^
         "Get-CimInstance -ClassName Win32_Service | ^
-        Select-Object Name,StartMode | ^
-        Export-Csv -Path 'backup_servicos.txt' -NoTypeInformation"
+        Where-Object { $_.StartMode -ne 'Disabled' } | ^
+        Select-Object Name, StartMode | ^
+        Export-Csv -Path '%~dp0backup_servicos.txt' -NoTypeInformation"
 )
 
-:: Desativação seletiva
-echo [AÇÃO] Desativando serviços...
+:: Desativação de serviços corrigida
+echo [AÇÃO] Desativando serviços de terceiros...
 PowerShell.exe -Command ^
-    "$excludedPaths = @('C:\\Windows', 'Program Files'); ^
-    Get-CimInstance -ClassName Win32_Service | ^
+    "$excluded = 'C:\\Windows', 'Program Files', 'Program Files (x86)'; ^
+    Get-CimInstance Win32_Service | ^
     Where-Object { ^
-        -not ($excludedPaths -match [regex]::Escape($_.PathName)) -and ^
-        ($_.StartMode -ne 'Disabled') } | ^
+        $_.PathName -and ^
+        -not ($excluded -match [regex]::Escape($_.PathName)) -and ^
+        $_.StartMode -ne 'Disabled' } | ^
     ForEach-Object { ^
-        $service = $_; ^
-        sc.exe config $service.Name start= disabled; ^
-        Write-Host \"$($service.Name) => DESATIVADO\" }"
+        $name = $_.Name; ^
+        sc.exe config `"$name`" start= disabled ^| Out-Null; ^
+        if ($LASTEXITCODE -eq 0) { Write-Host \"$name desativado\" } else { Write-Host \"Falha em $name\" } }"
+
+:: Verificações do sistema (ordem correta)
+echo [INFO] Verificando integridade do sistema...
+dism /online /cleanup-image /CheckHealth
+dism /online /cleanup-image /RestoreHealth
+sfc /scannow
+
+echo [AVISO] O CHKDSK será agendado para o próximo boot!
+echo Y | chkdsk /f /r /x
 
 echo.
-echo [AVISO] Recomendado: Crie um ponto de restauração manual!
-echo [RESTAURAR] Use o script abaixo para reverter alterações:
-echo.
-echo PowerShell.exe -Command ^
-    "Import-Csv 'backup_servicos.txt' | ForEach-Object { ^
-        sc.exe config $_.Name start= $_.StartMode }"
-
-:: Verificação de disco
-sfc /scannow 
-dism /online /cleanup-image /CheckHealth 
-dism /online /cleanup-image /restorehealth
-chkdsk /f /r /b
-
+echo [COMPLETO] Ações concluídas! Reinicie o computador.
 pause
